@@ -905,10 +905,8 @@ bool CAppMain::SelectChannel(const ChannelSelectInfo &SelInfo)
 				}
 			}
 			if (Index>=0) {
-				if (RecordManager.IsRecording()) {
-					if (!RecordOptions.ConfirmChannelChange(m_UICore.GetSkin()->GetVideoHostWindow()))
-						return false;
-				}
+				if (!m_UICore.ConfirmChannelChange())
+					return false;
 				return SetChannel(Space,Index);
 			}
 		}
@@ -917,6 +915,76 @@ bool CAppMain::SelectChannel(const ChannelSelectInfo &SelInfo)
 	}
 
 	return OpenTunerAndSetChannel(SelInfo.TunerName.c_str(),&SelInfo.Channel);
+}
+
+
+bool CAppMain::SwitchChannel(int Channel)
+{
+	const CChannelList *pChList=ChannelManager.GetCurrentRealChannelList();
+	if (pChList==NULL)
+		return false;
+	const CChannelInfo *pChInfo=pChList->GetChannelInfo(Channel);
+	if (pChInfo==NULL)
+		return false;
+
+	if (!m_UICore.ConfirmChannelChange())
+		return false;
+
+	return SetChannel(ChannelManager.GetCurrentSpace(),Channel);
+}
+
+
+bool CAppMain::SwitchChannelByNo(int ChannelNo,bool fSwitchService)
+{
+	if (ChannelNo<1)
+		return false;
+
+#ifdef NETWORK_REMOCON_SUPPORT
+	if (pNetworkRemocon!=NULL) {
+		if (!m_UICore.ConfirmChannelChange())
+			return false;
+		pNetworkRemocon->SetChannel(ChannelNo-1);
+		ChannelManager.SetNetworkRemoconCurrentChannel(
+			ChannelManager.GetCurrentChannelList()->FindChannelNo(ChannelNo));
+		m_UICore.OnChannelChanged(0);
+		PluginManager.SendChannelChangeEvent();
+		return true;
+	}
+#endif
+
+	const CChannelList *pList=ChannelManager.GetCurrentChannelList();
+	if (pList==NULL)
+		return false;
+
+	int Index;
+
+	if (pList->HasRemoteControlKeyID()) {
+		Index=pList->FindChannelNo(ChannelNo);
+
+		if (fSwitchService) {
+			const CChannelInfo *pCurChInfo=ChannelManager.GetCurrentChannelInfo();
+
+			if (pCurChInfo!=NULL && pCurChInfo->GetChannelNo()==ChannelNo) {
+				const int NumChannels=pList->NumChannels();
+
+				for (int i=ChannelManager.GetCurrentChannel()+1;i<NumChannels;i++) {
+					const CChannelInfo *pChInfo=pList->GetChannelInfo(i);
+
+					if (pChInfo->IsEnabled() && pChInfo->GetChannelNo()==ChannelNo) {
+						Index=i;
+						break;
+					}
+				}
+			}
+		}
+
+		if (Index<0)
+			return false;
+	} else {
+		Index=ChannelNo-1;
+	}
+
+	return SwitchChannel(Index);
 }
 
 
@@ -1115,10 +1183,8 @@ bool CAppMain::OpenTunerAndSetChannel(LPCTSTR pszDriverFileName,const CChannelIn
 	if (IsStringEmpty(pszDriverFileName) || pChannelInfo==NULL)
 		return false;
 
-	if (RecordManager.IsRecording()) {
-		if (!RecordOptions.ConfirmChannelChange(m_UICore.GetSkin()->GetVideoHostWindow()))
-			return false;
-	}
+	if (!m_UICore.ConfirmChannelChange())
+		return false;
 
 	if (!OpenTuner(pszDriverFileName))
 		return false;
@@ -2252,6 +2318,13 @@ HWND CUICore::GetMainWindow() const
 	return m_pSkin->GetMainWindow();
 }
 
+HWND CUICore::GetDialogOwner() const
+{
+	if (m_pSkin==NULL)
+		return NULL;
+	return m_pSkin->GetVideoHostWindow();
+}
+
 bool CUICore::InitializeViewer()
 {
 	if (m_pSkin==NULL)
@@ -2978,15 +3051,18 @@ bool CUICore::DoCommand(LPCTSTR pszCommand)
 	return DoCommand(Command);
 }
 
+bool CUICore::ConfirmChannelChange()
+{
+	if (RecordManager.IsRecording()) {
+		if (!RecordOptions.ConfirmChannelChange(GetDialogOwner()))
+			return false;
+	}
+	return true;
+}
+
 bool CUICore::ConfirmStopRecording()
 {
-	HWND hwnd;
-
-	if (m_pSkin!=NULL)
-		hwnd=m_pSkin->GetVideoHostWindow();
-	else
-		hwnd=NULL;
-	return RecordOptions.ConfirmStatusBarStop(hwnd);
+	return RecordOptions.ConfirmStatusBarStop(GetDialogOwner());
 }
 
 bool CUICore::UpdateIcon()
@@ -4141,10 +4217,8 @@ class CMyProgramGuideEventHandler : public CProgramGuide::CEventHandler
 
 	void OnServiceTitleLButtonDown(LPCTSTR pszDriverFileName,const CServiceInfoData *pServiceInfo) override
 	{
-		if (RecordManager.IsRecording()) {
-			if (!RecordOptions.ConfirmChannelChange(MainWindow.GetVideoHostWindow()))
-				return;
-		}
+		if (!AppMain.GetUICore()->ConfirmChannelChange())
+			return;
 
 		const bool fSetBonDriver=!IsStringEmpty(pszDriverFileName);
 		CMainWindow::ResumeInfo &ResumeInfo=MainWindow.GetResumeInfo();
@@ -4899,10 +4973,9 @@ class CMyChannelDisplayEventHandler : public CChannelDisplay::CEventHandler
 				&& IsEqualFileName(CoreEngine.GetDriverFileName(),pszDriverFileName)) {
 			MainWindow.SendCommand(CM_CHANNELDISPLAY);
 		} else {
-			if (RecordManager.IsRecording()) {
-				if (!RecordOptions.ConfirmChannelChange(MainWindow.GetVideoHostWindow()))
-					return;
-			}
+			if (!AppMain.GetUICore()->ConfirmChannelChange())
+				return;
+
 			if (AppMain.OpenTuner(pszDriverFileName)) {
 				if (TuningSpace!=SPACE_NOTSPECIFIED) {
 					MainWindow.SendCommand(CM_SPACE_FIRST+TuningSpace);
@@ -4919,10 +4992,9 @@ class CMyChannelDisplayEventHandler : public CChannelDisplay::CEventHandler
 
 	void OnChannelSelect(LPCTSTR pszDriverFileName,const CChannelInfo *pChannelInfo)
 	{
-		if (RecordManager.IsRecording()) {
-			if (!RecordOptions.ConfirmChannelChange(MainWindow.GetVideoHostWindow()))
-				return;
-		}
+		if (!AppMain.GetUICore()->ConfirmChannelChange())
+			return;
+
 		if (AppMain.OpenTuner(pszDriverFileName)) {
 			int Space;
 			if (RestoreChannelInfo.fAllChannels)
@@ -6506,12 +6578,12 @@ LRESULT CMainWindow::OnMessage(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam)
 			break;
 	case WM_KEYDOWN:
 		{
-			int Command;
+			int Channel;
 
 			if (wParam>=VK_F1 && wParam<=VK_F12) {
 				if (!Accelerator.IsFunctionKeyChannelChange())
 					break;
-				Command=CM_CHANNELNO_FIRST+((int)wParam-VK_F1);
+				Channel=((int)wParam-VK_F1)+1;
 			} else if (wParam>=VK_NUMPAD0 && wParam<=VK_NUMPAD9) {
 				if (m_ChannelNoInput.fInputting) {
 					OnChannelNoInput((int)wParam-VK_NUMPAD0);
@@ -6520,9 +6592,9 @@ LRESULT CMainWindow::OnMessage(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam)
 				if (!Accelerator.IsNumPadChannelChange())
 					break;
 				if (wParam==VK_NUMPAD0)
-					Command=CM_CHANNELNO_FIRST+9;
+					Channel=10;
 				else
-					Command=CM_CHANNELNO_FIRST+((int)wParam-VK_NUMPAD1);
+					Channel=(int)wParam-VK_NUMPAD0;
 			} else if (wParam>='0' && wParam<='9') {
 				if (m_ChannelNoInput.fInputting) {
 					OnChannelNoInput((int)wParam-'0');
@@ -6531,9 +6603,9 @@ LRESULT CMainWindow::OnMessage(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam)
 				if (!Accelerator.IsDigitKeyChannelChange())
 					break;
 				if (wParam=='0')
-					Command=CM_CHANNELNO_FIRST+9;
+					Channel=10;
 				else
-					Command=CM_CHANNELNO_FIRST+((int)wParam-'1');
+					Channel=(int)wParam-'0';
 			} else if (wParam>=VK_F13 && wParam<=VK_F24
 					&& !ControllerManager.IsControllerEnabled(TEXT("HDUS Remocon"))
 					&& (::GetKeyState(VK_SHIFT)<0 || ::GetKeyState(VK_CONTROL)<0)) {
@@ -6543,7 +6615,8 @@ LRESULT CMainWindow::OnMessage(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam)
 			} else {
 				break;
 			}
-			SendCommand(Command);
+
+			AppMain.SwitchChannelByNo(Channel,true);
 		}
 		return 0;
 
@@ -8199,18 +8272,10 @@ void CMainWindow::OnCommand(HWND hwnd,int id,HWND hwndCtl,UINT codeNotify)
 	case CM_CHANNEL_UP:
 	case CM_CHANNEL_DOWN:
 		{
-			const CChannelInfo *pInfo=ChannelManager.GetNextChannelInfo(id==CM_CHANNEL_UP);
+			int Channel=ChannelManager.GetNextChannel(id==CM_CHANNEL_UP);
 
-			if (pInfo!=NULL) {
-				const CChannelList *pList=ChannelManager.GetCurrentChannelList();
-
-				if (pList->HasRemoteControlKeyID() && pInfo->GetChannelNo()!=0)
-					SendCommand(CM_CHANNELNO_FIRST+pInfo->GetChannelNo()-1);
-				else
-					SendCommand(CM_CHANNEL_FIRST+pInfo->GetChannelIndex());
-			} else {
-				SendCommand(CM_CHANNEL_FIRST);
-			}
+			if (Channel>=0)
+				AppMain.SwitchChannel(Channel);
 		}
 		return;
 
@@ -8601,54 +8666,12 @@ void CMainWindow::OnCommand(HWND hwnd,int id,HWND hwndCtl,UINT codeNotify)
 		}
 
 		if (id>=CM_CHANNELNO_FIRST && id<=CM_CHANNELNO_LAST) {
-			int No=id-CM_CHANNELNO_FIRST;
-
-#ifdef NETWORK_REMOCON_SUPPORT
-			if (pNetworkRemocon!=NULL) {
-				if (RecordManager.IsRecording()) {
-					if (!RecordOptions.ConfirmChannelChange(GetVideoHostWindow()))
-						return;
-				}
-				pNetworkRemocon->SetChannel(No);
-				ChannelManager.SetNetworkRemoconCurrentChannel(
-					ChannelManager.GetCurrentChannelList()->FindChannelNo(No+1));
-				OnChannelChanged(0);
-				PluginManager.SendChannelChangeEvent();
-				return;
-			} else
-#endif
-			{
-				const CChannelList *pList=ChannelManager.GetCurrentChannelList();
-				if (pList==NULL)
-					return;
-
-				int Index;
-
-				if (pList->HasRemoteControlKeyID()) {
-					Index=pList->FindChannelNo(No+1);
-					if (Index<0)
-						return;
-				} else {
-					Index=No;
-				}
-				id=CM_CHANNEL_FIRST+Index;
-			}
+			AppMain.SwitchChannelByNo((id-CM_CHANNELNO_FIRST)+1,true);
+			return;
 		}
-		// 上から続いているため、ここに別なコードを入れてはいけないので注意
-		if (id>=CM_CHANNEL_FIRST && id<=CM_CHANNEL_LAST) {
-			int Channel=id-CM_CHANNEL_FIRST;
 
-			const CChannelList *pChList=ChannelManager.GetCurrentRealChannelList();
-			if (pChList==NULL)
-				return;
-			const CChannelInfo *pChInfo=pChList->GetChannelInfo(Channel);
-			if (pChInfo==NULL)
-				return;
-			if (RecordManager.IsRecording()) {
-				if (!RecordOptions.ConfirmChannelChange(GetVideoHostWindow()))
-					return;
-			}
-			AppMain.SetChannel(ChannelManager.GetCurrentSpace(),Channel);
+		if (id>=CM_CHANNEL_FIRST && id<=CM_CHANNEL_LAST) {
+			AppMain.SwitchChannel(id-CM_CHANNEL_FIRST);
 			return;
 		}
 
@@ -8702,10 +8725,8 @@ void CMainWindow::OnCommand(HWND hwnd,int id,HWND hwndCtl,UINT codeNotify)
 		}
 
 		if (id>=CM_SPACE_CHANNEL_FIRST && id<=CM_SPACE_CHANNEL_LAST) {
-			if (RecordManager.IsRecording()) {
-				if (!RecordOptions.ConfirmChannelChange(GetVideoHostWindow()))
-					return;
-			}
+			if (!m_pCore->ConfirmChannelChange())
+				return;
 			m_pCore->ProcessTunerMenu(id);
 			return;
 		}
@@ -8984,18 +9005,12 @@ void CMainWindow::OnTimer(HWND hwnd,UINT id)
 	case TIMER_ID_WHEELCHANNELCHANGE:
 		// ホイールでのチャンネル変更
 		{
-			const CChannelInfo *pInfo=ChannelManager.GetChangingChannelInfo();
+			const int Channel=ChannelManager.GetChangingChannel();
 
 			SetWheelChannelChanging(false);
 			ChannelManager.SetChangingChannel(-1);
-			if (pInfo!=NULL) {
-				const CChannelList *pList=ChannelManager.GetCurrentChannelList();
-
-				if (pList->HasRemoteControlKeyID())
-					SendCommand(CM_CHANNELNO_FIRST+pInfo->GetChannelNo()-1);
-				else
-					SendCommand(CM_CHANNELNO_FIRST+pInfo->GetChannelIndex());
-			}
+			if (Channel>=0)
+				AppMain.SwitchChannel(Channel);
 		}
 		break;
 
@@ -9736,15 +9751,15 @@ void CMainWindow::OnMouseWheel(WPARAM wParam,LPARAM lParam,bool fHorz)
 				fUp=Delta>0;
 			else
 				fUp=Delta<0;
-			const CChannelInfo *pInfo=ChannelManager.GetNextChannelInfo(fUp);
-			if (pInfo!=NULL) {
+			int Channel=ChannelManager.GetNextChannel(fUp);
+			if (Channel>=0) {
 				if (m_fWheelChannelChanging
 						&& m_WheelCount<5
 						&& TickTimeSpan(m_PrevWheelTime,CurTime)<(5UL-m_WheelCount)*100UL) {
 					break;
 				}
 				SetWheelChannelChanging(true,OperationOptions.GetWheelChannelDelay());
-				ChannelManager.SetChangingChannel(ChannelManager.FindChannelInfo(pInfo));
+				ChannelManager.SetChangingChannel(Channel);
 				StatusView.UpdateItem(STATUS_ITEM_CHANNEL);
 				if (OSDOptions.IsOSDEnabled(COSDOptions::OSD_CHANNEL))
 					ShowChannelOSD();
@@ -10706,8 +10721,7 @@ static bool SetCommandLineChannel(const CCommandLineOptions *pCmdLine)
 		if (pCmdLine->m_ControllerChannel==0)
 			return false;
 		if (ChannelManager.GetCurrentChannelList()->FindChannelNo(pCmdLine->m_ControllerChannel)>=0) {
-			MainWindow.SendCommand(CM_CHANNELNO_FIRST+pCmdLine->m_ControllerChannel-1);
-			return true;
+			return AppMain.SwitchChannelByNo(pCmdLine->m_ControllerChannel,false);
 		}
 		return false;
 	}
